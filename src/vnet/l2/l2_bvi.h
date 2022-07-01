@@ -127,6 +127,22 @@ l2_to_bvi (vlib_main_t * vlib_main,
   return TO_BVI_ERR_OK;
 }
 
+static_always_inline u32 l2_bvi_get_mac_address_by_index(u32 bvi_sw_if_index, u8 *bvi_mac_address)
+{
+    vnet_main_t *vnm = vnet_get_main ();
+    vnet_hw_interface_t *hi = NULL;
+
+    hi = vnet_get_sup_hw_interface(vnm, bvi_sw_if_index);
+    if(! hi) 
+    {
+        return 1;
+    }
+
+    clib_memcpy_fast(bvi_mac_address, hi->hw_address, 6);
+
+    return 0;
+}
+
 void
 l2bvi_register_input_type (vlib_main_t * vm,
 			   ethernet_type_t type, u32 node_index);

@@ -217,6 +217,46 @@ dpdk_find_startup_config (struct rte_eth_dev_info *di)
   return &dm->conf->default_devconf;
 }
 
+static bool is_Netronome_Device(const char *driver_name)
+{
+	bool ret = false;
+
+	if (0 == strncmp(driver_name,"net_nfp_pf",sizeof("net_nfp_pf") - 1))
+	{
+		ret = true;
+	}
+	else
+	{
+		ret = false; 
+	}
+
+	return ret;
+}
+
+static u8 get_new_pci_function_by_dev_name(u16 port_id)
+{
+	int  index = 0;
+	char if_name[RTE_ETH_NAME_MAX_LEN] = {0};
+
+	rte_eth_dev_get_name_by_port(port_id, if_name);
+
+	index = strlen(if_name);
+
+	switch(if_name[index-1])
+	{
+		case '0':
+			return (u8)0;
+		case '1':
+			return (u8)1;
+		case '2':
+			return (u8)2;
+		case '3':
+			return (u8)3;
+		default:
+			return (u8)0x7f;
+	}
+}
+
 static clib_error_t *
 dpdk_lib_init (dpdk_main_t * dm)
 {
@@ -290,6 +330,19 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  continue;
 	}
 
+	  /* renew pci function by huaxing.zhu*/
+	  u8 new_pci_f = 0x7f;
+	  bool is_nfp = is_Netronome_Device(di.driver_name);
+	  if(true == is_nfp)
+	  {
+	  	new_pci_f = get_new_pci_function_by_dev_name(port_id);
+	  	if(0x7f == new_pci_f)
+	  	{
+	   	 dpdk_log_warn ("[%d] get_new_pci_function_by_dev_name failed. Skipping...", port_id);
+	   	 continue;
+	  	}
+	  }
+
       vec_add2_aligned (dm->devices, xd, 1, CLIB_CACHE_LINE_BYTES);
       xd->port_id = port_id;
       xd->device_index = xd - dm->devices;
@@ -348,8 +401,18 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  if (dr && dr->interface_number_from_port_id)
 	    xd->name = format (xd->name, "%u", port_id);
 	  else if ((pci_dev = dpdk_get_pci_device (&di)))
-	    xd->name = format (xd->name, if_num_fmt, pci_dev->addr.bus,
-			       pci_dev->addr.devid, pci_dev->addr.function);
+	  {
+		if ((true == is_nfp) && (0x7f != new_pci_f))
+		{
+			xd->name = format (xd->name, if_num_fmt, pci_dev->addr.bus,
+						pci_dev->addr.devid, new_pci_f);
+		}
+		else
+		{
+			xd->name = format (xd->name, if_num_fmt, pci_dev->addr.bus,
+			           pci_dev->addr.devid, pci_dev->addr.function);
+		}
+	  }
 	  else
 	    xd->name = format (xd->name, "%u", port_id);
 	}
@@ -647,6 +710,13 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
 	 d->device_id == 0x1614 || d->device_id == 0x1606 ||
 	 d->device_id == 0x1609 || d->device_id == 0x1614)))
       ;
+	/* Netronome Systems, Inc. Device 4000 add by huaxing.zhu */
+	else if((0x19ee == d->vendor_id) && (0x4000 == d->device_id))
+	{
+		dpdk_log_warn ("(pci:%02u:%02u.%u)Netronome Systems, Inc. Device 4000 add!\n",
+			d->addr.bus,d->addr.slot,d->addr.function);
+        continue;
+	}
     else
       {
         dpdk_log_warn ("Unsupported PCI device 0x%04x:0x%04x found "

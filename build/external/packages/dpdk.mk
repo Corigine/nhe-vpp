@@ -11,9 +11,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-DPDK_PKTMBUF_HEADROOM        ?= 128
+DPDK_PKTMBUF_HEADROOM        ?= 256
 DPDK_USE_LIBBSD              ?= n
-DPDK_DEBUG                   ?= n
+DPDK_DEBUG                   ?= y
 DPDK_MLX4_PMD                ?= n
 DPDK_MLX5_PMD                ?= n
 DPDK_MLX5_COMMON_PMD         ?= n

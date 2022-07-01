@@ -16,7 +16,7 @@ external_source = build
 ifneq (,$(findstring debug,$(TAG)))
 	DPDK_DEBUG=y
 else
-	DPDK_DEBUG=n
+	DPDK_DEBUG=y
 endif
 
 DPDK_MAKE_ARGS = -C $(call find_source_fn,$(PACKAGE_SOURCE)) \

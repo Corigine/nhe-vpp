@@ -149,6 +149,8 @@ vl_api_vxlan_add_del_tunnel_t_handler (vl_api_vxlan_add_del_tunnel_t *mp)
     .decap_next_index = ntohl (mp->decap_next_index),
     .vni = ntohl (mp->vni),
   };
+  // rmac
+  clib_memcpy(a.rmac, mp->rmac, 6);
   ip_address_decode (&mp->src_address, &a.src);
   ip_address_decode (&mp->dst_address, &a.dst);
 
@@ -182,7 +184,8 @@ vl_api_vxlan_add_del_tunnel_v2_t_handler (vl_api_vxlan_add_del_tunnel_v2_t *mp)
     .dst_port = ntohs (mp->dst_port),
     .src_port = ntohs (mp->src_port),
   };
-
+  // rmac
+  clib_memcpy(a.rmac, mp->rmac, 6);
   ip_address_decode (&mp->src_address, &a.src);
   ip_address_decode (&mp->dst_address, &a.dst);
 
@@ -212,7 +215,8 @@ vl_api_vxlan_add_del_tunnel_v3_t_handler (vl_api_vxlan_add_del_tunnel_v3_t *mp)
     .src_port = ntohs (mp->src_port),
     .is_l3 = mp->is_l3,
   };
-
+  // rmac
+  clib_memcpy(a.rmac, mp->rmac, 6);
   ip_address_decode (&mp->src_address, &a.src);
   ip_address_decode (&mp->dst_address, &a.dst);
 

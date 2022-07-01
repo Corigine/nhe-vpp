@@ -22,7 +22,8 @@ else()
   set(BUFFER_ALLOC_FAULT_INJECTOR 0 CACHE STRING "fault injector off")
 endif()
 
-set(PRE_DATA_SIZE 128 CACHE STRING "Buffer headroom size.")
+#128 -> 256 zhuhuaxing 20220505#
+set(PRE_DATA_SIZE 256 CACHE STRING "Buffer headroom size.")
 
 if (CMAKE_BUILD_TYPE_UC STREQUAL "DEBUG")
   set(_ss 16)

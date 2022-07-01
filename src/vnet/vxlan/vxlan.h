@@ -47,6 +47,20 @@ typedef CLIB_PACKED (struct {
 }) ip6_vxlan_header_t;
 /* *INDENT-ON* */
 
+typedef CLIB_PACKED (struct {
+    ip4_header_t ip4;   /* 20 bytes */
+    udp_header_t udp;   /* 8 bytes */
+    vxlan_header_t vxlan;  /* 8 bytes */
+    ethernet_header_t  eth;   /*14 bytes */
+}) ip4_l3_vxlan_header_t;
+
+typedef CLIB_PACKED (struct {
+    ip6_header_t  ip6;  /* 40 bytes */
+    udp_header_t  udp;  /* 8 bytes */
+    vxlan_header_t  vxlan;  /*8 bytes */
+    ethernet_header_t  eth;  /*14 bytes */
+}) ip6_l3_vxlan_header_t;
+	
 /*
 * Key fields: remote ip, vni on incoming VXLAN packet
 * all fields in NET byte order
@@ -88,6 +102,9 @@ typedef struct
 
   /* vxlan VNI in HOST byte order */
   u32 vni;
+
+  /* L3 vxlan support*/
+  u8 rmac[6];
 
   /* tunnel src and dst addresses */
   ip46_address_t src;
@@ -213,6 +230,7 @@ typedef struct
    * structure, this seems less of a breaking change */
   u8 is_ip6;
   u8 is_l3;
+  u8 is_rmac;
   u32 instance;
   ip46_address_t src, dst;
   u32 mcast_sw_if_index;
@@ -221,6 +239,7 @@ typedef struct
   u32 vni;
   u16 src_port;
   u16 dst_port;
+  u8 rmac[6];
 } vnet_vxlan_add_del_tunnel_args_t;
 
 int vnet_vxlan_add_del_tunnel
@@ -231,6 +250,14 @@ void vnet_int_vxlan_bypass_mode (u32 sw_if_index, u8 is_ip6, u8 is_enable);
 int vnet_vxlan_add_del_rx_flow (u32 hw_if_index, u32 t_imdex, int is_add);
 
 u32 vnet_vxlan_get_tunnel_index (u32 sw_if_index);
+
+/*
+* L3 vxlan support
+*/
+extern vnet_hw_interface_class_t vxlan_hw_interface_class;
+extern void vxlan_update_adj (vnet_main_t * vnm,
+			    u32 sw_if_index, adj_index_t ai);
+
 #endif /* included_vnet_vxlan_h */
 
 /*

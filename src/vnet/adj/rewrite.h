@@ -150,6 +150,9 @@ vnet_rewrite_set_data_internal (vnet_rewrite_header_t * rw,
   ASSERT ((max_size > 0) && (max_size < VNET_REWRITE_TOTAL_BYTES));
   ASSERT ((data_bytes >= 0) && (data_bytes < max_size));
 
+  if (NULL == data || data_bytes == 0) {
+  	return;
+  }
   rw->data_bytes = data_bytes;
   clib_memcpy_fast (rw->data, data, data_bytes);
   clib_memset (rw->data + data_bytes, 0xfe, max_size - data_bytes);

@@ -25,6 +25,8 @@
 #include <vnet/flow/flow.h>
 #include <vnet/udp/udp_local.h>
 #include <vlib/vlib.h>
+#include <vnet/l2/l2_input.h>
+
 
 /**
  * @file
@@ -72,6 +74,16 @@ format_decap_next (u8 * s, va_list * args)
   return s;
 }
 
+static bool is_rmac_config(u8 *mac_addr)
+{
+  if (mac_addr[0] == 0x00 && mac_addr[1] == 0x00 && mac_addr[2] == 0x00 &&
+    mac_addr[3] == 0x00 && mac_addr[4] == 0x00 && mac_addr[5] == 0x00)
+    {
+      return false;
+    }
+  return true;
+}
+
 u8 *
 format_vxlan_tunnel (u8 * s, va_list * args)
 {
@@ -84,7 +96,11 @@ format_vxlan_tunnel (u8 * s, va_list * args)
 	      IP46_TYPE_ANY, format_ip46_address, &t->dst, IP46_TYPE_ANY,
 	      t->src_port, t->dst_port, t->vni, t->encap_fib_index,
 	      t->sw_if_index);
-
+  // rmac for L3 vxlan
+  if (is_rmac_config(t->rmac))
+    {
+      s = format(s, "rmac %U ", format_mac_address, t->rmac);
+    }
   s = format (s, "encap-dpo-idx %d ", t->next_dpo.dpoi_index);
 
   if (PREDICT_FALSE (t->decap_next_index != VXLAN_INPUT_NEXT_L2_INPUT))
@@ -128,12 +144,167 @@ vxlan_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
   return /* no error */ 0;
 }
 
+static u8* vxlan_build_rewrite (vxlan_tunnel_t *t)
+{
+  u8 *rewrite = NULL;
+  u8 is_ipv6  = 0;
+  ip4_l3_vxlan_header_t *h4 = NULL;
+  ip6_l3_vxlan_header_t *h6 = NULL;
+  ethernet_header_t *eth = NULL;
+  u32 sw_if_index = 0;
+  u16 type = 0;
+  
+  if(! t) 
+  {
+      return NULL;
+  }
+  
+  is_ipv6 = ip46_address_is_ip4(&t->dst) ? 0 : 1;
+  
+  if (!is_ipv6)
+  {
+      vec_validate (rewrite, sizeof (*h4) - 1);
+      h4 = (ip4_l3_vxlan_header_t *) rewrite;
+      clib_memcpy_fast(h4, t->rewrite_header.data, t->rewrite_header.data_bytes);
+      eth  = &h4->eth;
+      type = ETHERNET_TYPE_IP4;
+  }
+  else
+  {
+      vec_validate (rewrite, sizeof (*h6) - 1);
+      h6 = (ip6_l3_vxlan_header_t *) rewrite;
+      clib_memcpy_fast(h6, t->rewrite_header.data, t->rewrite_header.data_bytes);
+      eth  = &h6->eth;
+      type = ETHERNET_TYPE_IP6;
+  }
+
+  sw_if_index = t->sw_if_index;
+  get_l2_bridge_bvi_mac_address(sw_if_index, eth->src_address);
+  clib_memcpy_fast(eth->dst_address, t->rmac, 6);
+  eth->type = clib_host_to_net_u16 (type);
+  
+  return (rewrite);
+}
+
+static void ether_proto_fixup(vlib_buffer_t *b0, ethernet_header_t *eth0)
+{
+    ip4_header_t  *ip0 = NULL;
+
+    ip0 = vlib_buffer_get_current(b0);
+    if((ip0->ip_version_and_header_length & 0xF0) == 0x40)
+    {
+        eth0->type = clib_host_to_net_u16(ETHERNET_TYPE_IP4);
+    }
+    else if((ip0->ip_version_and_header_length & 0xF0) == 0x60)
+    {
+        eth0->type = clib_host_to_net_u16(ETHERNET_TYPE_IP6);
+    }
+
+    return;
+}
+
+static void vxlan4_fixup (vlib_main_t * vm, const ip_adjacency_t * adj, vlib_buffer_t * b0, const void *data)
+{
+    ip4_l3_vxlan_header_t *h0 = NULL;
+
+    h0 = vlib_buffer_get_current(b0);
+    
+    h0->ip4.length = clib_host_to_net_u16 (vlib_buffer_length_in_chain (vm, b0));
+    h0->ip4.checksum = ip4_header_checksum(&h0->ip4);
+
+    h0->udp.length = clib_host_to_net_u16 (clib_net_to_host_u16(h0->ip4.length) - sizeof(ip4_header_t));
+
+    /*set udp src port*/
+    vlib_buffer_advance(b0, sizeof(ip4_vxlan_header_t));
+    h0->udp.src_port = vnet_l2_compute_flow_hash(b0);
+
+    vlib_buffer_advance(b0, sizeof(ethernet_header_t));
+    ether_proto_fixup(b0, &h0->eth);
+
+    vlib_buffer_advance(b0, -sizeof(ip4_l3_vxlan_header_t));
+    
+    /*set udp checksum*/
+    h0->udp.checksum = 0;
+
+    return;
+}
+
+static void vxlan6_fixup (vlib_main_t * vm, const ip_adjacency_t * adj, vlib_buffer_t * b0, const void *data)
+{
+    ip6_l3_vxlan_header_t *h0 = NULL; 
+    int bogus = 0;
+
+    h0 = vlib_buffer_get_current(b0);
+    h0->ip6.payload_length = clib_host_to_net_u16(vlib_buffer_length_in_chain(vm, b0) - sizeof(h0->ip6));
+
+    h0->udp.length = h0->ip6.payload_length;
+
+    /*set udp6 src port*/
+    vlib_buffer_advance(b0, sizeof(ip6_vxlan_header_t));
+    h0->udp.src_port = vnet_l2_compute_flow_hash(b0);
+
+    vlib_buffer_advance(b0, sizeof(ethernet_header_t));
+    ether_proto_fixup(b0, &h0->eth);
+
+    vlib_buffer_advance(b0, -sizeof(ip6_l3_vxlan_header_t));
+
+    /*set udp6 checksum*/
+    h0->udp.checksum = ip6_tcp_udp_icmp_compute_checksum (vm, b0, &h0->ip6, &bogus);
+    if(0 == h0->udp.checksum)
+    {
+        h0->udp.checksum = 0xffff;
+    }
+
+    return;
+}
+
+static adj_midchain_fixup_t vxlan_get_fixup (vxlan_tunnel_t *t)
+{
+  
+  if (ip46_address_is_ip4(&t->dst))
+  {
+      return vxlan4_fixup;
+  }
+  else
+  {
+      return vxlan6_fixup;
+  }
+  
+  return vxlan4_fixup;
+}
+
+/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+static int
+vxlan_tunnel_desc (u32 sw_if_index,
+		 ip46_address_t * src, ip46_address_t * dst, u8 * is_l2)
+{
+  vxlan_main_t *vxlanm = &vxlan_main;
+  vxlan_tunnel_t *t;
+  u32 ti;
+
+  ti = vxlanm->tunnel_index_by_sw_if_index[sw_if_index];
+
+  if (~0 == ti)
+    /* not one of ours */
+    return -1;
+
+  t = pool_elt_at_index (vxlanm->tunnels, ti);
+
+  *src = t->src;
+  *dst = t->dst;
+  *is_l2 = 1;
+
+  return (0);
+}
+/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+
 /* *INDENT-OFF* */
 VNET_DEVICE_CLASS (vxlan_device_class, static) = {
   .name = "VXLAN",
   .format_device_name = format_vxlan_name,
   .format_tx_trace = format_vxlan_encap_trace,
   .admin_up_down_function = vxlan_interface_admin_up_down,
+  .ip_tun_desc = vxlan_tunnel_desc,/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
 };
 /* *INDENT-ON* */
 
@@ -151,7 +322,77 @@ VNET_HW_INTERFACE_CLASS (vxlan_hw_class) = {
   .format_header = format_vxlan_header_with_length,
   .build_rewrite = default_build_rewrite,
 };
+
 /* *INDENT-ON* */
+VNET_HW_INTERFACE_CLASS (vxlan_hw_interface_class) = {
+  .name = "VXLAN",
+  .format_header = NULL,
+  .unformat_header = NULL,
+  .build_rewrite = NULL,
+  .update_adjacency = vxlan_update_adj,
+  .flags = VNET_HW_INTERFACE_CLASS_FLAG_P2P,
+};
+
+/**
+ * vxlan_tunnel_stack
+ *
+ * 'stack' (resolve the recursion for) the tunnel's midchain adjacency
+ */
+void vxlan_tunnel_stack(adj_index_t ai)
+{
+  vxlan_main_t *vxm = &vxlan_main;
+  ip_adjacency_t *adj;
+  vxlan_tunnel_t *t;
+  u32 sw_if_index;
+
+  adj = adj_get(ai);
+  sw_if_index = adj->rewrite_header.sw_if_index;
+
+  if ((vec_len(vxm->tunnel_index_by_sw_if_index) <= sw_if_index) ||
+    (~0 == vxm->tunnel_index_by_sw_if_index[sw_if_index]))
+    {
+      return;
+    }
+
+  t = pool_elt_at_index(vxm->tunnels,
+            vxm->tunnel_index_by_sw_if_index[sw_if_index]);
+  if ((vnet_hw_interface_get_flags(vnet_get_main(), t->hw_if_index) &
+    VNET_HW_INTERFACE_FLAG_LINK_UP) == 0)
+    {
+      adj_midchain_delegate_unstack(ai);
+    }
+  else
+    {
+      fib_prefix_t tun_dst_pre = {0};
+      u8 is_ipv4 = ip46_address_is_ip4(&t->dst);
+      tun_dst_pre.fp_len = is_ipv4 ? 32 : 128;
+      tun_dst_pre.fp_proto = is_ipv4 ? FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6;
+      tun_dst_pre.fp_addr = t->dst;
+
+      adj_midchain_delegate_stack(ai, t->encap_fib_index, &tun_dst_pre);
+    }
+
+}
+
+void vxlan_update_adj (vnet_main_t * vnm, u32 sw_if_index, adj_index_t ai)
+{
+  vxlan_main_t *vxm = &vxlan_main;
+  vxlan_tunnel_t *t;
+  adj_flags_t af;
+  u32 ti;
+
+  ti = vxm->tunnel_index_by_sw_if_index[sw_if_index];
+  t = pool_elt_at_index(vxm->tunnels, ti);
+  af = ADJ_FLAG_NONE | ADJ_FLAG_MIDCHAIN_IP_STACK;
+
+  adj_nbr_midchain_update_rewrite
+    (ai, vxlan_get_fixup(t),
+    NULL, af,
+    vxlan_build_rewrite(t)
+    );
+
+  vxlan_tunnel_stack(ai);
+}
 
 static void
 vxlan_tunnel_restack_dpo (vxlan_tunnel_t * t)
@@ -254,6 +495,14 @@ const static fib_node_vft_t vxlan_vft = {
   _ (dst)                                                                     \
   _ (src_port)                                                                \
   _ (dst_port)
+
+#define foreach_mac_address_offset              \
+_(0)                                            \
+_(1)                                            \
+_(2)                                            \
+_(3)                                            \
+_(4)                                            \
+_(5)
 
 static void
 vxlan_rewrite (vxlan_tunnel_t * t, bool is_ip6)
@@ -437,6 +686,10 @@ int vnet_vxlan_add_del_tunnel
       foreach_copy_field;
 #undef _
 
+#define _(i) t->rmac[i] = a->rmac[i];
+      foreach_mac_address_offset
+#undef _
+
       vxlan_rewrite (t, is_ip6);
       /*
        * Reconcile the real dev_instance and a possible requested instance.
@@ -455,8 +708,13 @@ int vnet_vxlan_add_del_tunnel
       t->dev_instance = dev_instance;	/* actual */
       t->user_instance = user_instance; /* name */
       t->flow_index = ~0;
-
-      if (a->is_l3)
+      if (a->is_rmac)
+      {
+        t->hw_if_index =
+            vnet_register_interface(vnm, vxlan_device_class.index, dev_instance,
+            vxlan_hw_interface_class.index, dev_instance);
+      }
+      else if (a->is_l3)
 	t->hw_if_index =
 	  vnet_register_interface (vnm, vxlan_device_class.index, dev_instance,
 				   vxlan_hw_class.index, dev_instance);
@@ -487,6 +745,11 @@ int vnet_vxlan_add_del_tunnel
       vnet_set_interface_output_node (vnm, t->hw_if_index, encap_index);
 
       t->sw_if_index = sw_if_index = hi->sw_if_index;
+      // ip4-midchain-->tunnel-output
+      if (a->is_rmac) {
+         vnet_set_interface_l3_output_node (vxm->vlib_main, sw_if_index,
+		(u8 *) "tunnel-output");
+      }
 
       /* copy the key */
       int add_failed;
@@ -746,6 +1009,8 @@ vxlan_add_del_tunnel_command_fn (vlib_main_t * vm,
   u32 src_port = 0;
   u32 dst_port = 0;
   u32 table_id;
+  u8 rmac[6] = {0};
+  u8 rmac_set = 0;
   clib_error_t *parse_error = NULL;
 
   /* Get a line of input. */
@@ -772,6 +1037,11 @@ vxlan_add_del_tunnel_command_fn (vlib_main_t * vm,
 	  dst_set = 1;
 	  ip46_address_is_ip4 (&dst) ? (ipv4_set = 1) : (ipv6_set = 1);
 	}
+      else if (unformat (line_input, "rmac %U",
+             unformat_mac_address, rmac))
+    {
+      rmac_set = 1;
+    }
       else if (unformat (line_input, "group %U %U",
 			 unformat_ip46_address, &dst, IP46_TYPE_ANY,
 			 unformat_vnet_sw_interface,
@@ -852,11 +1122,17 @@ vxlan_add_del_tunnel_command_fn (vlib_main_t * vm,
   vnet_vxlan_add_del_tunnel_args_t a = { .is_add = is_add,
 					 .is_ip6 = ipv6_set,
 					 .is_l3 = is_l3,
+					 .is_rmac = rmac_set,
 					 .instance = instance,
 #define _(x) .x = x,
 					 foreach_copy_field
 #undef _
   };
+
+#define _(i) a.rmac[i] = rmac[i];
+        foreach_mac_address_offset;
+#undef _
+
 
   u32 tunnel_sw_if_index;
   int rv = vnet_vxlan_add_del_tunnel (&a, &tunnel_sw_if_index);
@@ -924,7 +1200,8 @@ VLIB_CLI_COMMAND (create_vxlan_tunnel_command, static) = {
     " {dst <remote-vtep-addr>|group <mcast-vtep-addr> <intf-name>} vni <nn>"
     " [instance <id>]"
     " [encap-vrf-id <nn>] [decap-next [l2|node <name>]] [del] [l3]"
-    " [src_port <local-vtep-udp-port>] [dst_port <remote-vtep-udp-port>]",
+    " [src_port <local-vtep-udp-port>] [dst_port <remote-vtep-udp-port>]"
+    " [rmac <router-mac>]",
   .function = vxlan_add_del_tunnel_command_fn,
 };
 /* *INDENT-ON* */

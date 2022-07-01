@@ -27,6 +27,11 @@
 
 #include <vnet/gre/packet.h>
 
+/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+#include <vnet/vxlan/vxlan.h>
+#include <vnet/udp/udp_local.h>
+/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+
 #define foreach_esp_decrypt_next                                              \
   _ (DROP, "error-drop")                                                      \
   _ (IP4_INPUT, "ip4-input-no-checksum")                                      \
@@ -71,7 +76,8 @@ typedef enum
   _ (OVERSIZED_HEADER, "buffer with oversized header (dropped)")              \
   _ (NO_TAIL_SPACE, "no enough buffer tail space (dropped)")                  \
   _ (TUN_NO_PROTO, "no tunnel protocol")                                      \
-  _ (UNSUP_PAYLOAD, "unsupported payload")
+  _ (UNSUP_PAYLOAD, "unsupported payload")                                    \
+  _ (PAYLOAD_VXLAN_CHECK_ERROR, "payload vxlan check error") /*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
 
 typedef enum
 {
@@ -93,6 +99,8 @@ typedef struct
   u32 sa_seq;
   u32 sa_seq_hi;
   u32 pkt_seq_hi;
+  u32 is_vxlan;/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+  u32 vxlan_vni;/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
   ipsec_crypto_alg_t crypto_alg;
   ipsec_integ_alg_t integ_alg;
 } esp_decrypt_trace_t;
@@ -108,11 +116,24 @@ format_esp_decrypt_trace (u8 * s, va_list * args)
   CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
   esp_decrypt_trace_t *t = va_arg (*args, esp_decrypt_trace_t *);
 
-  s = format (s,
+  /*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+  if(1 == t->is_vxlan)
+  {
+  	s = format (s,
+	      "esp: crypto %U integrity %U pkt-seq %d sa-seq %u sa-seq-hi %u "
+	      "pkt-seq-hi %u next-protocol:vxlan(vni:%u)",
+	      format_ipsec_crypto_alg, t->crypto_alg, format_ipsec_integ_alg,
+	      t->integ_alg, t->seq, t->sa_seq, t->sa_seq_hi, t->pkt_seq_hi,t->vxlan_vni);
+  }
+  else
+  {
+  	s = format (s,
 	      "esp: crypto %U integrity %U pkt-seq %d sa-seq %u sa-seq-hi %u "
 	      "pkt-seq-hi %u",
 	      format_ipsec_crypto_alg, t->crypto_alg, format_ipsec_integ_alg,
 	      t->integ_alg, t->seq, t->sa_seq, t->sa_seq_hi, t->pkt_seq_hi);
+  }
+  
   return s;
 }
 
@@ -747,12 +768,204 @@ out:
   return (ESP_DECRYPT_ERROR_RX_PKTS);
 }
 
+/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+static const vxlan_decap_info_t esp_decap_bad_flags = {
+  .sw_if_index = ~0,
+  .next_index = VXLAN_INPUT_NEXT_DROP,
+  .error = VXLAN_ERROR_BAD_FLAGS
+};
+
+static const vxlan_decap_info_t esp_decap_not_found = {
+  .sw_if_index = ~0,
+  .next_index = VXLAN_INPUT_NEXT_DROP,
+  .error = VXLAN_ERROR_NO_SUCH_TUNNEL
+};
+
+typedef clib_bihash_kv_16_8_t last_tunnel_cache4;
+
+static_always_inline vxlan_decap_info_t 
+esp_vxlan4_find_tunnel (vxlan_main_t * vxm, 
+                                  last_tunnel_cache4 * cache,
+		                          u32 fib_index, 
+		                          ip4_header_t * ip4_0,
+		                          udp_header_t *udp,
+		                          vxlan_header_t * vxlan0,
+		                          u32 * stats_sw_if_index)
+{
+  if (PREDICT_FALSE (vxlan0->flags != VXLAN_FLAGS_I))
+    return esp_decap_bad_flags;
+
+  /* Make sure VXLAN tunnel exist according to packet S/D IP, UDP port, VRF,
+   * and VNI */
+  u32 dst = ip4_0->dst_address.as_u32;
+  u32 src = ip4_0->src_address.as_u32;
+  vxlan4_tunnel_key_t key4 = {
+    .key[0] = ((u64) dst << 32) | src,
+    .key[1] = ((u64) udp->dst_port << 48) | ((u64) fib_index << 32) |
+	      vxlan0->vni_reserved,
+  };
+
+  if (PREDICT_TRUE
+      (key4.key[0] == cache->key[0] && key4.key[1] == cache->key[1]))
+    {
+      /* cache hit */
+      vxlan_decap_info_t di = {.as_u64 = cache->value };
+      *stats_sw_if_index = di.sw_if_index;
+      return di;
+    }
+
+  int rv = clib_bihash_search_inline_16_8 (&vxm->vxlan4_tunnel_by_key, &key4);
+  if (PREDICT_TRUE (rv == 0))
+    {
+      *cache = key4;
+      vxlan_decap_info_t di = {.as_u64 = key4.value };
+      *stats_sw_if_index = di.sw_if_index;
+      return di;
+    }
+
+  /* try multicast */
+  if (PREDICT_TRUE (!ip4_address_is_multicast (&ip4_0->dst_address)))
+    return esp_decap_not_found;
+
+  /* search for mcast decap info by mcast address */
+  key4.key[0] = dst;
+  rv = clib_bihash_search_inline_16_8 (&vxm->vxlan4_tunnel_by_key, &key4);
+  if (rv != 0)
+    return esp_decap_not_found;
+
+  /* search for unicast tunnel using the mcast tunnel local(src) ip */
+  vxlan_decap_info_t mdi = {.as_u64 = key4.value };
+  key4.key[0] = ((u64) mdi.local_ip.as_u32 << 32) | src;
+  rv = clib_bihash_search_inline_16_8 (&vxm->vxlan4_tunnel_by_key, &key4);
+  if (PREDICT_FALSE (rv != 0))
+    return esp_decap_not_found;
+
+  /* mcast traffic does not update the cache */
+  *stats_sw_if_index = mdi.sw_if_index;
+  vxlan_decap_info_t di = {.as_u64 = key4.value };
+  return di;
+}
+
+typedef clib_bihash_kv_24_8_t last_tunnel_cache6;
+
+static_always_inline vxlan_decap_info_t 
+esp_vxlan6_find_tunnel (vxlan_main_t * vxm, 
+                                  last_tunnel_cache6 * cache,
+		                          u32 fib_index, 
+		                          ip6_header_t * ip6_0,
+		                          udp_header_t *udp,
+		                          vxlan_header_t * vxlan0,
+		                          u32 * stats_sw_if_index)
+{
+  if (PREDICT_FALSE (vxlan0->flags != VXLAN_FLAGS_I))
+    return esp_decap_bad_flags;
+
+  /* Make sure VXLAN tunnel exist according to packet SIP, UDP port, VRF, and
+   * VNI */
+  vxlan6_tunnel_key_t key6 = {
+    .key[0] = ip6_0->src_address.as_u64[0],
+    .key[1] = ip6_0->src_address.as_u64[1],
+    .key[2] = ((u64) udp->dst_port << 48) | ((u64) fib_index << 32) |
+	      vxlan0->vni_reserved,
+  };
+
+  if (PREDICT_FALSE
+      (clib_bihash_key_compare_24_8 (key6.key, cache->key) == 0))
+    {
+      int rv =
+	clib_bihash_search_inline_24_8 (&vxm->vxlan6_tunnel_by_key, &key6);
+      if (PREDICT_FALSE (rv != 0))
+	return esp_decap_not_found;
+
+      *cache = key6;
+    }
+  vxlan_tunnel_t *t0 = pool_elt_at_index (vxm->tunnels, cache->value);
+
+  /* Validate VXLAN tunnel SIP against packet DIP */
+  if (PREDICT_TRUE (ip6_address_is_equal (&ip6_0->dst_address, &t0->src.ip6)))
+    *stats_sw_if_index = t0->sw_if_index;
+  else
+    {
+      /* try multicast */
+      if (PREDICT_TRUE (!ip6_address_is_multicast (&ip6_0->dst_address)))
+	return esp_decap_not_found;
+
+      /* Make sure mcast VXLAN tunnel exist by packet DIP and VNI */
+      key6.key[0] = ip6_0->dst_address.as_u64[0];
+      key6.key[1] = ip6_0->dst_address.as_u64[1];
+      int rv =
+	clib_bihash_search_inline_24_8 (&vxm->vxlan6_tunnel_by_key, &key6);
+      if (PREDICT_FALSE (rv != 0))
+	return esp_decap_not_found;
+
+      vxlan_tunnel_t *mcast_t0 = pool_elt_at_index (vxm->tunnels, key6.value);
+      *stats_sw_if_index = mcast_t0->sw_if_index;
+    }
+
+  vxlan_decap_info_t di = {
+    .sw_if_index = t0->sw_if_index,
+    .next_index = t0->decap_next_index,
+  };
+  return di;
+}
+
+always_inline vxlan_decap_info_t
+esp_decrypt_post_crypto_vxlan_check (vlib_buffer_t *b,
+                                                     int is_ip6,
+                                                     ip4_header_t *ip4,
+                                                     ip6_header_t *ip6,
+                                                     udp_header_t *udp)
+{
+	vxlan_main_t *vxm = &vxlan_main;
+	last_tunnel_cache4 last4;
+	last_tunnel_cache6 last6;
+	u32 fi = 0;
+	u32 stats_if = ~0;
+	vxlan_header_t *vxlan_h = NULL;
+	vxlan_decap_info_t di;
+
+	if(NULL == vxm)
+	{
+		return esp_decap_bad_flags;
+	}
+
+	clib_memset (&last4, 0xff, sizeof last4);
+	clib_memset (&last6, 0xff, sizeof last6);
+
+	/*此刻current_data指针在VxLAN头部*/
+	vxlan_h = vlib_buffer_get_current (b);
+	if(NULL == vxlan_h)
+	{
+		return esp_decap_bad_flags;
+	}
+
+	if(is_ip6)
+	{
+		fi = vlib_buffer_get_ip_fib_index (b, 0);
+		di = esp_vxlan6_find_tunnel (vxm, &last6, fi, ip6, udp,vxlan_h, &stats_if);
+	}
+	else
+	{
+		fi = vlib_buffer_get_ip_fib_index (b, 1);
+		di = esp_vxlan4_find_tunnel (vxm, &last4, fi, ip4, udp,vxlan_h, &stats_if);
+	}
+
+    return di;
+}
+
+typedef struct
+{
+  u32 is_vxlan;
+  u32 vxlan_vni;
+} esp_decrypt_next_protocol_t;
+/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+
 static_always_inline void
 esp_decrypt_post_crypto (vlib_main_t *vm, const vlib_node_runtime_t *node,
 			 const esp_decrypt_packet_data_t *pd,
 			 const esp_decrypt_packet_data2_t *pd2,
 			 vlib_buffer_t *b, u16 *next, int is_ip6, int is_tun,
-			 int is_async)
+			 int is_async, esp_decrypt_next_protocol_t *np)
 {
   ipsec_sa_t *sa0 = ipsec_sa_get (pd->sa_index);
   vlib_buffer_t *lb = b;
@@ -920,6 +1133,81 @@ esp_decrypt_post_crypto (vlib_main_t *vm, const vlib_node_runtime_t *node,
 	  b->current_length = pd->current_length - adv;
 	  esp_remove_tail (vm, b, lb, tail);
 	}
+	  /*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+	  else if (next_header == IP_PROTOCOL_UDP)
+	{
+	  ip4_header_t *ip4 = NULL;
+	  ip6_header_t *ip6 = NULL;
+	  b->current_data = pd->current_data;
+	  u8 *ptr = vlib_buffer_get_current (b);
+
+	  /*首先记录报文IP地址*/
+	  if (is_ip6)
+	  {
+	  	ip6 = (ip6_header_t *)(ptr - sizeof (ip6_header_t));
+		if(NULL == ip6)
+		{
+			goto error;
+		}
+	  }
+	  else
+	  {  
+		ip4 = (ip4_header_t *)(ptr - sizeof (ip4_header_t));
+		if(NULL == ip4)
+		{
+			goto error;
+		}
+	  }
+
+	  b->current_data = pd->current_data + adv;
+	  b->current_length = pd->current_length - adv - tail;
+
+	  udp_header_t *udp_h = NULL;
+	  u16 dst_port = 0;
+	  vxlan_decap_info_t vxlan_di = {0};
+	  
+	  udp_h = vlib_buffer_get_current (b);
+	  if(NULL == udp_h)
+	  {
+	  	goto error;
+	  }
+
+	  dst_port = clib_net_to_host_u16(udp_h->dst_port);
+
+      if(UDP_DST_PORT_vxlan == dst_port)
+      {
+      	/*VXLAN,校验VxLAN Tunnel是否存在*/
+		vlib_buffer_advance (b, sizeof(udp_header_t));
+
+		/*用于打印*/
+		vxlan_header_t *vxlan0 = vlib_buffer_get_current (b);
+		np->is_vxlan = 1;
+		np->vxlan_vni = vnet_get_vni (vxlan0);
+
+        /*此刻current_data指针在VxLAN头部*/
+		vxlan_di = esp_decrypt_post_crypto_vxlan_check(b,is_ip6,ip4,ip6,udp_h);
+		if(0 != vxlan_di.error)
+		{
+			goto error;
+		}
+
+	  	next[0] = ESP_DECRYPT_NEXT_L2_INPUT;
+
+	    vlib_buffer_advance (b, sizeof(vxlan_header_t));
+
+		/* Required to make the l2 tag push / pop code work on l2 subifs */
+	    vnet_update_l2_len (b);
+      }
+	  else
+	  {
+error:
+	  	/*非VxLAN报文报错处理*/
+	  	next[0] = ESP_DECRYPT_NEXT_DROP;
+	    b->error = node->errors[ESP_DECRYPT_ERROR_PAYLOAD_VXLAN_CHECK_ERROR];
+	    return;
+	  }
+	}
+	  /*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
       else
 	{
 	  if (is_tun && next_header == IP_PROTOCOL_GRE)
@@ -1306,9 +1594,11 @@ esp_decrypt_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       if (PREDICT_FALSE (b[0]->flags & VLIB_BUFFER_IS_TRACED))
 	current_sa_index = vnet_buffer (b[0])->ipsec.sad_index;
 
+	  /*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+	  esp_decrypt_next_protocol_t np = {0};
       if (sync_next[0] >= ESP_DECRYPT_N_NEXT)
 	esp_decrypt_post_crypto (vm, node, pd, pd2, b[0], sync_next, is_ip6,
-				 is_tun, 0);
+				 is_tun, 0, &np);
 
       /* trace: */
       if (PREDICT_FALSE (b[0]->flags & VLIB_BUFFER_IS_TRACED))
@@ -1322,6 +1612,8 @@ esp_decrypt_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  tr->sa_seq = sa0->seq;
 	  tr->sa_seq_hi = sa0->seq_hi;
 	  tr->pkt_seq_hi = pd->seq_hi;
+	  tr->is_vxlan = np.is_vxlan;/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+	  tr->vxlan_vni = np.vxlan_vni;/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
 	}
 
       /* next */
@@ -1365,14 +1657,16 @@ esp_decrypt_post_inline (vlib_main_t * vm,
 	  vlib_prefetch_buffer_header (b[1], LOAD);
 	}
 
+	  /*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+	  esp_decrypt_next_protocol_t np = {0};
       if (!pd->is_chain)
 	esp_decrypt_post_crypto (vm, node, pd, 0, b[0], next, is_ip6, is_tun,
-				 1);
+				 1, &np);
       else
 	{
 	  esp_decrypt_packet_data2_t *pd2 = esp_post_data2 (b[0]);
 	  esp_decrypt_post_crypto (vm, node, pd, pd2, b[0], next, is_ip6,
-				   is_tun, 1);
+				   is_tun, 1, &np);
 	}
 
       /*trace: */
@@ -1390,6 +1684,8 @@ esp_decrypt_post_inline (vlib_main_t * vm,
 	  tr->seq = pd->seq;
 	  tr->sa_seq = sa0->seq;
 	  tr->sa_seq_hi = sa0->seq_hi;
+	  tr->is_vxlan = np.is_vxlan;/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
+	  tr->vxlan_vni = np.vxlan_vni;/*ipsec tunnel protect vxlan zhuhuaxing 20220424*/
 	}
 
       n_left--;

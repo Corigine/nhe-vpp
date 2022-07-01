@@ -925,3 +925,45 @@ VLIB_INIT_FUNCTION (l2_init);
  * eval: (c-set-style "gnu")
  * End:
  */
+
+u32 get_l2_bridge_bvi_index(u32 sw_if_index)
+{
+    u16 bd_index = 0;
+    l2_input_config_t  *config = NULL;
+    l2_bridge_domain_t *bd = NULL;
+
+    config = l2input_intf_config(sw_if_index);
+
+    if(!config)
+    {
+        return 0;
+    }
+
+    if(! l2_input_is_bridge(config)) 
+    {
+        return 0;    
+    }
+
+    bd_index = config->bd_index;
+    bd = bd_get(bd_index);
+    if(! bd)
+    {
+        return 0;
+    }
+
+    return bd->bvi_sw_if_index;
+    
+}
+
+u32 get_l2_bridge_bvi_mac_address(u32 sw_if_index, u8* bvi_mac_address)
+{
+    u32 bvi_sw_if_index = 0;
+
+    if(0 == (bvi_sw_if_index = get_l2_bridge_bvi_index(sw_if_index)))
+    {
+        return 1;    
+    }
+
+    return l2_bvi_get_mac_address_by_index(bvi_sw_if_index, bvi_mac_address);
+}
+
