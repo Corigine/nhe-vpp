@@ -33,27 +33,27 @@ cd ..
 pkt_name="nhe_c_vpp_2202"
 mkdir $pkt_name
 chmod 777 $pkt_name
-cp vpp/build-root/*.deb $pkt_name/
+cp nhe-vpp/build-root/*.deb $pkt_name/
 chmod 777 $pkt_name/*.deb
 
 #8.package dpdk-devbind.py
-cp vpp/dpdk-devbind.py  $pkt_name/
+cp nhe-vpp/dpdk-devbind.py  $pkt_name/
 
 #9.package binding_dpdk.sh
-cp vpp/binding_dpdk.sh  $pkt_name/
+cp nhe-vpp/binding_dpdk.sh  $pkt_name/
 
 #10.package vpp_install.sh
-cp vpp/vpp_install.sh $pkt_name/
+cp nhe-vpp/vpp_install.sh $pkt_name/
 
 #11.package vpp dependent library
 cd $pkt_name/
 mkdir dependent-library
 chmod 777 dependent-library
 cd ..
-cp vpp/dependent-library/libmbedcrypto3_2.16.4-1ubuntu2_amd64.deb $pkt_name/dependent-library/
-cp vpp/dependent-library/libmbedtls12_2.16.4-1ubuntu2_amd64.deb $pkt_name/dependent-library/
-cp vpp/dependent-library/libmbedx509-0_2.16.4-1ubuntu2_amd64.deb $pkt_name/dependent-library/
-cp vpp/dependent-library/libnl-route-3-200_3.4.0-1_amd64.deb $pkt_name/dependent-library/
+cp nhe-vpp/dependent-library/libmbedcrypto3_2.16.4-1ubuntu2_amd64.deb $pkt_name/dependent-library/
+cp nhe-vpp/dependent-library/libmbedtls12_2.16.4-1ubuntu2_amd64.deb $pkt_name/dependent-library/
+cp nhe-vpp/dependent-library/libmbedx509-0_2.16.4-1ubuntu2_amd64.deb $pkt_name/dependent-library/
+cp nhe-vpp/dependent-library/libnl-route-3-200_3.4.0-1_amd64.deb $pkt_name/dependent-library/
 
 #12.tar vpp run deb package
 tar -zcvf $pkt_name.tar.gz ./$pkt_name/
