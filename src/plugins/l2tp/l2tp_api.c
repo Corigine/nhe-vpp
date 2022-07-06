@@ -65,6 +65,7 @@ send_sw_if_l2tpv3_tunnel_details (vpe_api_main_t * am,
   mp->local_cookie[0] = s->local_cookie[0];
   mp->local_cookie[1] = s->local_cookie[1];
   mp->remote_cookie = s->remote_cookie;
+  mp->instance = s->instance;
   ip_address_encode ((ip46_address_t *) & s->client_address, IP46_TYPE_IP6,
 		     &mp->client_address);
   ip_address_encode ((ip46_address_t *) & s->our_address, IP46_TYPE_IP6,
@@ -135,15 +136,28 @@ static void vl_api_l2tpv3_create_tunnel_t_handler
   ip_address_decode (&mp->client_address, &client);
   ip_address_decode (&mp->our_address, &our);
 
-  rv = create_l2tpv3_ipv6_tunnel (lm,
-				  &client.ip6,
-				  &our.ip6,
+  if (mp->is_add)
+  {
+      rv = create_l2tpv3_ipv6_tunnel (lm,
+				  &client.ip6, &our.ip6,
 				  ntohl (mp->local_session_id),
 				  ntohl (mp->remote_session_id),
 				  clib_net_to_host_u64 (mp->local_cookie),
 				  clib_net_to_host_u64 (mp->remote_cookie),
+          ntohl(mp->instance),
 				  mp->l2_sublayer_present,
 				  encap_fib_index, &sw_if_index);
+  }
+  else
+  {
+    rv = del_l2tpv3_ipv6_tunnel(lm,
+          &client.ip6, &our.ip6, 
+          ntohl (mp->local_session_id),
+				  ntohl (mp->remote_session_id),
+          ntohl(mp->instance));
+  }
+
+
 
 out:
   /* *INDENT-OFF* */
@@ -165,8 +179,7 @@ static void vl_api_l2tpv3_set_tunnel_cookies_t_handler
 
   rv = l2tpv3_set_tunnel_cookies (lm, ntohl (mp->sw_if_index),
 				  clib_net_to_host_u64 (mp->new_local_cookie),
-				  clib_net_to_host_u64
-				  (mp->new_remote_cookie));
+				  clib_net_to_host_u64 (mp->new_remote_cookie));
 
   BAD_SW_IF_INDEX_LABEL;
 

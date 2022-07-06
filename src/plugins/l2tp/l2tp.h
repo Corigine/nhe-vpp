@@ -38,6 +38,9 @@ typedef struct
   u32 hw_if_index;
   u32 sw_if_index;
 
+	/* Instance name being shown to user */
+  u32 instance;	
+
   /* fib index used for outgoing encapsulated packets */
   u32 encap_fib_index;
 
@@ -64,6 +67,9 @@ typedef struct
   uword *session_by_src_address;
   uword *session_by_dst_address;
   uword *session_by_session_id;
+
+  /* Record used instances */
+  uword *instance_used;
 
   ip6_to_l2_lookup_t lookup_type;
 
@@ -127,8 +133,16 @@ int create_l2tpv3_ipv6_tunnel (l2t_main_t * lm,
 			       u32 remote_session_id,
 			       u64 local_cookie,
 			       u64 remote_cookie,
+             u32 instance,
 			       int l2_sublayer_present,
 			       u32 encap_fib_index, u32 * sw_if_index);
+
+int del_l2tpv3_ipv6_tunnel (l2t_main_t * lm,
+			       ip6_address_t * client_address,
+			       ip6_address_t * our_address,
+			       u32 local_session_id,
+			       u32 remote_session_id,
+             u32 instance);
 
 int l2tpv3_set_tunnel_cookies (l2t_main_t * lm,
 			       u32 sw_if_index,

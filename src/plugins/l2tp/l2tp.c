@@ -34,11 +34,11 @@ format_l2t_trace (u8 * s, va_list * args)
   l2t_trace_t *t = va_arg (*args, l2t_trace_t *);
 
   if (t->is_user_to_network)
-    s = format (s, "L2T: %U (client) -> %U (our) session %d",
+    s = format (s, "L2TP: %U (client) -> %U (our) session %d",
 		format_ip6_address, &t->client_address,
 		format_ip6_address, &t->our_address, t->session_index);
   else
-    s = format (s, "L2T: %U (our) -> %U (client) session %d)",
+    s = format (s, "L2TP: %U (our) -> %U (client) session %d)",
 		format_ip6_address, &t->our_address,
 		format_ip6_address, &t->client_address, t->session_index);
   return s;
@@ -52,8 +52,8 @@ format_l2t_session (u8 * s, va_list * args)
   u32 counter_index;
   vlib_counter_t v;
 
-  s = format (s, "[%d] %U (our) %U (client) %U (sw_if_index %d)\n",
-	      session - lm->sessions,
+  s = format (s, "[%d] instance %d %U (our) %U (client) %U (sw_if_index %d)\n",
+	      session - lm->sessions, session->instance,
 	      format_ip6_address, &session->our_address,
 	      format_ip6_address, &session->client_address,
 	      format_vnet_sw_interface_name, lm->vnet_main,
@@ -226,7 +226,7 @@ VLIB_CLI_COMMAND (clear_counters_command, static) = {
 };
 /* *INDENT-ON* */
 
-static u8 *
+/*static u8 *
 format_l2tpv3_name (u8 * s, va_list * args)
 {
   l2t_main_t *lm = &l2t_main;
@@ -240,8 +240,27 @@ format_l2tpv3_name (u8 * s, va_list * args)
     i = show_dev_instance;
 
   return format (s, "l2tpv3_tunnel%d", i);
+}*/
+
+static u8 *
+format_l2tpv3_name (u8 * s, va_list * args)
+{
+  l2t_main_t *lm = &l2t_main;
+  u32 dev_instance = va_arg (*args, u32);
+  l2t_session_t *t = 0;
+
+   if (dev_instance == ~0)
+    return format (s, "<cached-unused>");
+
+  if (dev_instance >= vec_len(lm->sessions))
+   return format (s, "<improperly-referenced>");
+
+  t = pool_elt_at_index(lm->sessions, dev_instance);
+
+  return format (s, "l2tpv3_tunnel%d", t->instance);
 }
 
+/*
 static int
 l2tpv3_name_renumber (vnet_hw_interface_t * hi, u32 new_dev_instance)
 {
@@ -253,12 +272,12 @@ l2tpv3_name_renumber (vnet_hw_interface_t * hi, u32 new_dev_instance)
 
   return 0;
 }
-
+*/
 /* *INDENT-OFF* */
 VNET_DEVICE_CLASS (l2tpv3_device_class,static) = {
   .name = "L2TPv3",
   .format_device_name = format_l2tpv3_name,
-  .name_renumber = l2tpv3_name_renumber,
+  //.name_renumber = l2tpv3_name_renumber,
 };
 /* *INDENT-ON* */
 
@@ -280,22 +299,16 @@ VNET_HW_INTERFACE_CLASS (l2tpv3_hw_class) = {
 /* *INDENT-ON* */
 
 int
-create_l2tpv3_ipv6_tunnel (l2t_main_t * lm,
+del_l2tpv3_ipv6_tunnel (l2t_main_t * lm,
 			   ip6_address_t * client_address,
 			   ip6_address_t * our_address,
 			   u32 local_session_id,
 			   u32 remote_session_id,
-			   u64 local_cookie,
-			   u64 remote_cookie,
-			   int l2_sublayer_present,
-			   u32 encap_fib_index, u32 * sw_if_index)
+         u32 instance)
 {
   l2t_session_t *s = 0;
   vnet_main_t *vnm = lm->vnet_main;
-  vnet_hw_interface_t *hi;
   uword *p = (uword *) ~ 0;
-  u32 hw_if_index;
-  l2tpv3_header_t l2tp_hdr;
   ip6_address_t *dst_address_copy, *src_address_copy;
   u32 counter_index;
 
@@ -320,9 +333,109 @@ create_l2tpv3_ipv6_tunnel (l2t_main_t * lm,
       ASSERT (0);
     }
 
+  /* del a session: session must already exist */
+  if (!p)
+    return VNET_API_ERROR_NO_SUCH_ENTRY;
+
+  //compare session parameter
+  s = pool_elt_at_index(lm->sessions, *p);
+  if (clib_memcmp(&s->our_address, our_address, sizeof (s->our_address)) != 0|| 
+      clib_memcmp(&s->client_address, client_address, sizeof (s->client_address)) != 0 ||
+      (s->local_session_id != local_session_id) ||
+      (s->remote_session_id != remote_session_id) || 
+      (s->instance != instance))
+    return VNET_API_ERROR_INVALID_VALUE;
+  
+  //del interface
+  vnet_sw_interface_set_flags (vnm, s->sw_if_index, 0 /* down */ );
+  vnet_delete_hw_interface (vnm, s->hw_if_index);
+
+  /* validate counters */
+  counter_index = session_index_to_counter_index (s - lm->sessions,
+				                         SESSION_COUNTER_USER_TO_NETWORK);
+  vlib_zero_combined_counter (&lm->counter_main, counter_index);
+  vlib_zero_combined_counter (&lm->counter_main, counter_index+1);
+
+  /* del hash table entries */
+  switch (lm->lookup_type)
+    {
+    case L2T_LOOKUP_SRC_ADDRESS:
+      src_address_copy = clib_mem_alloc (sizeof (*src_address_copy));
+      clib_memcpy (src_address_copy, client_address, sizeof (*src_address_copy));
+      hash_unset_mem (lm->session_by_src_address, src_address_copy);
+      break;
+    case L2T_LOOKUP_DST_ADDRESS:
+      dst_address_copy = clib_mem_alloc (sizeof (*dst_address_copy));
+      clib_memcpy (dst_address_copy, our_address, sizeof (*dst_address_copy));
+      hash_unset_mem (lm->session_by_dst_address, dst_address_copy);
+      break;
+    case L2T_LOOKUP_SESSION_ID:
+      hash_unset (lm->session_by_session_id, local_session_id);
+      break;
+
+    default:
+      ASSERT (0);
+    }
+
+  hash_unset(lm->instance_used, instance);
+
+  pool_put(lm->sessions, s);
+
+
+
+  return 0;
+}
+
+
+int
+create_l2tpv3_ipv6_tunnel (l2t_main_t * lm,
+			   ip6_address_t * client_address,
+			   ip6_address_t * our_address,
+			   u32 local_session_id,
+			   u32 remote_session_id,
+			   u64 local_cookie,
+			   u64 remote_cookie,
+         u32 instance,
+			   int l2_sublayer_present,
+			   u32 encap_fib_index, u32 * sw_if_index)
+{
+  l2t_session_t *s = 0;
+  vnet_main_t *vnm = lm->vnet_main;
+  vnet_hw_interface_t *hi;
+  uword *p = (uword *) ~ 0;
+  u32 hw_if_index;
+  l2tpv3_header_t l2tp_hdr;
+  ip6_address_t *dst_address_copy, *src_address_copy;
+  u32 counter_index;
+
+  remote_session_id = clib_host_to_net_u32 (remote_session_id);
+  local_session_id = clib_host_to_net_u32 (local_session_id);
+
+  p = hash_get(lm->instance_used, instance);
+  if (p)
+  return VNET_API_ERROR_TUNNEL_EXIST;
+
+  switch (lm->lookup_type)
+    {
+    case L2T_LOOKUP_SRC_ADDRESS:
+      p = hash_get_mem (lm->session_by_src_address, client_address);
+      break;
+
+    case L2T_LOOKUP_DST_ADDRESS:
+      p = hash_get_mem (lm->session_by_dst_address, our_address);
+      break;
+
+    case L2T_LOOKUP_SESSION_ID:
+      p = hash_get (lm->session_by_session_id, local_session_id);
+      break;
+
+    default:
+      ASSERT (0);
+    }
+
   /* adding a session: session must not already exist */
   if (p)
-    return VNET_API_ERROR_INVALID_VALUE;
+    return VNET_API_ERROR_TUNNEL_EXIST;
 
   pool_get (lm->sessions, s);
   clib_memset (s, 0, sizeof (*s));
@@ -334,6 +447,7 @@ create_l2tpv3_ipv6_tunnel (l2t_main_t * lm,
   s->local_session_id = local_session_id;
   s->remote_session_id = remote_session_id;
   s->l2_sublayer_present = l2_sublayer_present;
+  s->instance = instance;
   /* precompute l2tp header size */
   s->l2tp_hdr_size = l2_sublayer_present ?
     sizeof (l2tpv3_header_t) :
@@ -342,6 +456,7 @@ create_l2tpv3_ipv6_tunnel (l2t_main_t * lm,
   s->encap_fib_index = encap_fib_index;
 
   /* Setup hash table entries */
+  hash_set(lm->instance_used, instance, s - lm->sessions);
   switch (lm->lookup_type)
     {
     case L2T_LOOKUP_SRC_ADDRESS:
@@ -399,6 +514,9 @@ create_l2tpv3_ipv6_tunnel (l2t_main_t * lm,
   if (sw_if_index)
     *sw_if_index = hi->sw_if_index;
 
+  //if (sw_if_index)
+  //  *sw_if_index = instance;
+
   if (!lm->proto_registered)
     {
       ip6_register_protocol (IP_PROTOCOL_L2TP, l2t_decap_local_node.index);
@@ -417,13 +535,15 @@ create_l2tpv3_tunnel_command_fn (vlib_main_t * vm,
   unformat_input_t _line_input, *line_input = &_line_input;
   l2t_main_t *lm = &l2t_main;
   u64 local_cookie = (u64) ~ 0, remote_cookie = (u64) ~ 0;
-  u32 local_session_id = 1, remote_session_id = 1;
+  u32 local_session_id = (u32)~ 0, remote_session_id = (u32)~ 0;
   int our_address_set = 0, client_address_set = 0;
   int l2_sublayer_present = 0;
+  u8 is_add = 1;
   int rv;
-  u32 sw_if_index;
-  u32 encap_fib_id = ~0;
+  u32 sw_if_index = (u32)~0;
+  u32 encap_fib_id = (u32)~0;
   u32 encap_fib_index = ~0;
+  u32 instance = (u32)~0;
   clib_error_t *error = NULL;
 
   /* Get a line of input. */
@@ -432,43 +552,43 @@ create_l2tpv3_tunnel_command_fn (vlib_main_t * vm,
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat (line_input, "client %U",
-		    unformat_ip6_address, &client_address))
-	client_address_set = 1;
-      else if (unformat (line_input, "our %U",
-			 unformat_ip6_address, &our_address))
-	our_address_set = 1;
+      if (unformat (line_input, "del"))
+        is_add = 0;
+      else if (unformat (line_input, "client %U", unformat_ip6_address, &client_address))
+      	client_address_set = 1;
+      else if (unformat (line_input, "our %U", unformat_ip6_address, &our_address))
+      	our_address_set = 1;
       else if (unformat (line_input, "local-cookie %llx", &local_cookie))
-	;
+	      ;
       else if (unformat (line_input, "remote-cookie %llx", &remote_cookie))
-	;
+      	;
       else if (unformat (line_input, "local-session-id %d",
 			 &local_session_id))
-	;
-      else if (unformat (line_input, "remote-session-id %d",
-			 &remote_session_id))
-	;
+	      ;
+      else if (unformat (line_input, "remote-session-id %d", &remote_session_id))
+	      ;
       else if (unformat (line_input, "fib-id %d", &encap_fib_id))
-	;
+	      ;
       else if (unformat (line_input, "l2-sublayer-present"))
-	l2_sublayer_present = 1;
+      	l2_sublayer_present = 1;
+      else if (unformat (line_input, "instance %d", &instance))
+        ;
       else
-	{
-	  error = clib_error_return (0, "parse error: '%U'",
-				     format_unformat_error, line_input);
-	  goto done;
-	}
+      {
+        error = clib_error_return (0, "parse error: '%U'", format_unformat_error, line_input);
+        goto done;
+      }
     }
 
-  if (encap_fib_id != ~0)
+  if (encap_fib_id != (u32)~0)
     {
       uword *p;
       ip6_main_t *im = &ip6_main;
       if (!(p = hash_get (im->fib_index_by_table_id, encap_fib_id)))
-	{
-	  error = clib_error_return (0, "No fib with id %d", encap_fib_id);
-	  goto done;
-	}
+      {
+        error = clib_error_return (0, "No fib with id %d", encap_fib_id);
+        goto done;
+      }
       encap_fib_index = p[0];
     }
   else
@@ -486,26 +606,59 @@ create_l2tpv3_tunnel_command_fn (vlib_main_t * vm,
       error = clib_error_return (0, "client address not specified");
       goto done;
     }
+  if (local_session_id == (u32)~0)
+  {
+    error = clib_error_return(0, "local session id not specified");
+    goto done;
+  }
+  if (remote_session_id == (u32)~0)
+  {
+    error = clib_error_return(0, "remote session id not specified");
+    goto done;
+  }
+  if (instance == (u32)~0)
+  {
+    error = clib_error_return(0, "instance not specified");
+    goto done;
+  }
 
-  rv = create_l2tpv3_ipv6_tunnel (lm, &client_address, &our_address,
-				  local_session_id, remote_session_id,
-				  local_cookie, remote_cookie,
-				  l2_sublayer_present,
-				  encap_fib_index, &sw_if_index);
+  if (is_add)
+  {
+    rv = create_l2tpv3_ipv6_tunnel (lm, &client_address, &our_address,
+            local_session_id, remote_session_id,
+            local_cookie, remote_cookie,
+            instance, l2_sublayer_present,
+            encap_fib_index, &sw_if_index);
+  }
+  else
+  {
+    rv = del_l2tpv3_ipv6_tunnel(lm,  &client_address, &our_address,
+            local_session_id, remote_session_id, instance);
+  }
+
   switch (rv)
     {
     case 0:
+    if (sw_if_index != (u32)~0)
+    {
       vlib_cli_output (vm, "%U\n", format_vnet_sw_if_index_name,
 		       vnet_get_main (), sw_if_index);
+    }
       break;
     case VNET_API_ERROR_INVALID_VALUE:
-      error = clib_error_return (0, "session already exists...");
+      error = clib_error_return (0, "input invalid value...");
       goto done;
 
     case VNET_API_ERROR_NO_SUCH_ENTRY:
       error = clib_error_return (0, "session does not exist...");
       goto done;
 
+    case VNET_API_ERROR_TUNNEL_EXIST:
+      error = clib_error_return (0, "session already exists...");
+      goto done;
+    case 1 :
+      ;
+      goto done;
     default:
       error = clib_error_return (0, "l2tp_session_add_del returned %d", rv);
       goto done;
@@ -522,7 +675,7 @@ VLIB_CLI_COMMAND (create_l2tpv3_tunnel_command, static) =
 {
   .path = "create l2tpv3 tunnel",
   .short_help =
-  "create l2tpv3 tunnel client <ip6> our <ip6> local-cookie <hex> remote-cookie <hex> local-session <dec> remote-session <dec>",
+  "create l2tpv3 tunnel client <ip6> our <ip6> local-cookie <hex> remote-cookie <hex> local-session <dec> remote-session <dec> instance <id> [del]",
   .function = create_l2tpv3_tunnel_command_fn,
 };
 /* *INDENT-ON* */
@@ -731,6 +884,7 @@ l2tp_init (vlib_main_t * vm)
     (0, sizeof (ip6_address_t) /* key bytes */ ,
      sizeof (u32) /* value bytes */ );
   lm->session_by_session_id = hash_create (0, sizeof (uword));
+  lm->instance_used = hash_create(0, sizeof(uword));
 
   pi = ip_get_protocol_info (im, IP_PROTOCOL_L2TP);
   pi->unformat_pg_edit = unformat_pg_l2tp_header;

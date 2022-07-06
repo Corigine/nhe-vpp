@@ -35,6 +35,7 @@ define l2tpv3_create_tunnel
 {
   u32 client_index;
   u32 context;
+  bool is_add [default=true];
   vl_api_address_t client_address;
   vl_api_address_t our_address;
   u32 local_session_id;
@@ -43,6 +44,7 @@ define l2tpv3_create_tunnel
   u64 remote_cookie;
   bool l2_sublayer_present;
   u32 encap_vrf_id;
+  u32 instance;
 };
 
 /** \brief l2tpv3 tunnel interface create response
@@ -77,6 +79,7 @@ define sw_if_l2tpv3_tunnel_details
   u32 remote_session_id;
   u64 local_cookie[2];
   u64 remote_cookie;
+  u32 instance;
   bool l2_sublayer_present;
 };
 
