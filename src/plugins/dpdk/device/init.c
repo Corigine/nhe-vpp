@@ -56,17 +56,17 @@ const struct
   const char *pfx;
 } if_name_prefixes[] = {
   /* sorted, higher speed first */
-  { ETH_LINK_SPEED_200G, "TwoHundredGigabitEthernet" },
-  { ETH_LINK_SPEED_100G, "HundredGigabitEthernet" },
-  { ETH_LINK_SPEED_56G, "FiftySixGigabitEthernet" },
-  { ETH_LINK_SPEED_50G, "FiftyGigabitEthernet" },
-  { ETH_LINK_SPEED_40G, "FortyGigabitEthernet" },
-  { ETH_LINK_SPEED_25G, "TwentyFiveGigabitEthernet" },
-  { ETH_LINK_SPEED_20G, "TwentyGigabitEthernet" },
-  { ETH_LINK_SPEED_10G, "TenGigabitEthernet" },
-  { ETH_LINK_SPEED_5G, "FiveGigabitEthernet" },
-  { ETH_LINK_SPEED_2_5G, "TwoDotFiveGigabitEthernet" },
-  { ETH_LINK_SPEED_1G, "GigabitEthernet" },
+  { ETH_LINK_SPEED_200G, "200GE" },
+  { ETH_LINK_SPEED_100G, "100GE" },
+  { ETH_LINK_SPEED_56G, "56GE" },
+  { ETH_LINK_SPEED_50G, "50GE" },
+  { ETH_LINK_SPEED_40G, "40GE" },
+  { ETH_LINK_SPEED_25G, "25GE" },
+  { ETH_LINK_SPEED_20G, "20GE" },
+  { ETH_LINK_SPEED_10G, "10GE" },
+  { ETH_LINK_SPEED_5G, "5GE" },
+  { ETH_LINK_SPEED_2_5G, "2.5GE" },
+  { ETH_LINK_SPEED_1G, "Eth" },
 };
 
 static clib_error_t *
