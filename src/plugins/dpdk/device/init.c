@@ -66,7 +66,7 @@ const struct
   { ETH_LINK_SPEED_10G, "10GE" },
   { ETH_LINK_SPEED_5G, "5GE" },
   { ETH_LINK_SPEED_2_5G, "2.5GE" },
-  { ETH_LINK_SPEED_1G, "Eth" },
+  { ETH_LINK_SPEED_1G, "GE" },
 };
 
 static clib_error_t *
