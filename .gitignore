@@ -29,7 +29,7 @@
 /build/external/*.tar.xz
 /build/external/vpp-*
 /build/external/dpdk_mlx_default.sh
-/build/external/downloads/
+#/build/external/downloads/
 /path_setup
 /tools/
 # start autotools ignore
