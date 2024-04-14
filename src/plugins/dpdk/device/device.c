@@ -55,12 +55,13 @@ dpdk_add_del_mac_address (vnet_hw_interface_t * hi,
   else
     error = rte_eth_dev_mac_addr_remove (xd->port_id,
 					 (struct rte_ether_addr *) address);
-
+#if 0
+//NFP Driver do not support mac options
   if (error)
     {
       return clib_error_return (0, "mac address add/del failed: %d", error);
     }
-
+#endif
   return NULL;
 }
 

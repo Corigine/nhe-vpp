@@ -218,6 +218,45 @@ dpdk_find_startup_config (struct rte_eth_dev_info *di)
   return &dm->conf->default_devconf;
 }
 
+static bool is_corigine_Device(const char *driver_name)
+{
+	bool ret = false;
+
+	if (0 == strncmp(driver_name,"net_nfp_pf",sizeof("net_nfp_pf") - 1))
+	{
+		ret = true;
+	}
+	else
+	{
+		ret = false;
+	}
+
+	return ret;
+}
+
+static u8 get_new_pci_function_by_dev_name(u16 port_id)
+{
+    int  index     = 0;
+    int  result    = 0;
+    char digits[3] = {0};
+    char if_name[RTE_ETH_NAME_MAX_LEN] = {0};
+
+    rte_eth_dev_get_name_by_port(port_id, if_name);
+
+    index = strlen(if_name);
+    if (strlen("flower_repr_p60") == index)
+        digits[0] = if_name[index-1];
+    else
+        memcpy(digits, if_name + index -2, 2);
+
+    result = atoi(digits);
+
+    if (result < 14)
+        return (u8)result;
+    else
+        return (u8)0x7f;
+}
+
 static clib_error_t *
 dpdk_lib_init (dpdk_main_t * dm)
 {
@@ -264,6 +303,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       dpdk_device_config_t *devconf = 0;
       vnet_eth_interface_registration_t eir = {};
       dpdk_driver_t *dr;
+      u32 dev_flags;
 
       if (!rte_eth_dev_is_valid_port (port_id))
 	continue;
@@ -282,6 +322,11 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  continue;
 	}
 
+  dev_flags = *(di.dev_flags);
+  if ((dev_flags & RTE_ETH_DEV_REPRESENTOR) == 0) {
+    continue;
+  }
+
       devconf = dpdk_find_startup_config (&di);
 
       /* If device is blacklisted, we should skip it */
@@ -291,6 +336,17 @@ dpdk_lib_init (dpdk_main_t * dm)
 			   di.driver_name);
 	  continue;
 	}
+
+    /* renew pci function by huaxing.zhu*/
+    u8 new_pci_f = 0x7f;
+    bool is_nfp = is_corigine_Device(di.driver_name);
+    if(true == is_nfp) {
+        new_pci_f = get_new_pci_function_by_dev_name(port_id);
+        if(0x7f == new_pci_f) {
+            dpdk_log_warn ("[%d] get_new_pci_function_by_dev_name failed. Skipping...", port_id);
+            continue;
+        }
+    }
 
       vec_add2_aligned (dm->devices, xd, 1, CLIB_CACHE_LINE_BYTES);
       xd->port_id = port_id;
@@ -350,9 +406,13 @@ dpdk_lib_init (dpdk_main_t * dm)
 
 	  if (dr && dr->interface_number_from_port_id)
 	    xd->name = format (xd->name, "%u", port_id);
-	  else if ((pci_dev = dpdk_get_pci_device (&di)))
-	    xd->name = format (xd->name, if_num_fmt, pci_dev->addr.bus,
-			       pci_dev->addr.devid, pci_dev->addr.function);
+	  else if ((pci_dev = dpdk_get_pci_device (&di))) {
+        if ((true == is_nfp) && (0x7f != new_pci_f)) {
+                xd->name = format (xd->name, if_num_fmt, pci_dev->addr.bus, pci_dev->addr.devid, new_pci_f);
+        } else {
+                xd->name = format (xd->name, if_num_fmt, pci_dev->addr.bus, pci_dev->addr.devid, pci_dev->addr.function);
+        }
+    }
 	  else
 	    xd->name = format (xd->name, "%u", port_id);
 	}
@@ -672,6 +732,13 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
 	 d->device_id == 0x1614 || d->device_id == 0x1606 ||
 	 d->device_id == 0x1609 || d->device_id == 0x1614)))
       ;
+    /* Netronome Systems, Inc. Device 3800 add by huaxing.zhu */
+    else if((0x1da8 == d->vendor_id) && (0x3800 == d->device_id))
+    {
+        dpdk_log_warn ("(pci:%02u:%02u.%u)Netronome Systems, Inc. Device 3800 add!\n",
+                            d->addr.bus,d->addr.slot,d->addr.function);
+        continue;
+    }
     else
       {
         dpdk_log_warn ("Unsupported PCI device 0x%04x:0x%04x found "
