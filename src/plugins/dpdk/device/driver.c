@@ -126,8 +126,8 @@ static dpdk_driver_t dpdk_drivers[] = {
     .mq_mode_none = 1,
   },
   {
-  	/* Netronome Systems, Inc. Device 4000 add by huaxing.zhu */
-    .drivers = DPDK_DRIVERS ({ "net_nfp_pf", "Netronome Device 4000" }),
+	/* Netronome Systems, Inc. Device 3800 add by huaxing.zhu */
+    .drivers = DPDK_DRIVERS ({ "net_nfp_pf", "Netronome Device 3800" }),
   }
 };
 

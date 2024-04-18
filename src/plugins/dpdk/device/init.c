@@ -56,17 +56,17 @@ const struct
   const char *pfx;
 } if_name_prefixes[] = {
   /* sorted, higher speed first */
-  { ETH_LINK_SPEED_200G, "200GE" },
-  { ETH_LINK_SPEED_100G, "100GE" },
-  { ETH_LINK_SPEED_56G, "56GE" },
-  { ETH_LINK_SPEED_50G, "50GE" },
-  { ETH_LINK_SPEED_40G, "40GE" },
-  { ETH_LINK_SPEED_25G, "25GE" },
-  { ETH_LINK_SPEED_20G, "20GE" },
-  { ETH_LINK_SPEED_10G, "10GE" },
-  { ETH_LINK_SPEED_5G, "5GE" },
-  { ETH_LINK_SPEED_2_5G, "2.5GE" },
-  { ETH_LINK_SPEED_1G, "GE" },
+  { RTE_ETH_LINK_SPEED_200G, "TwoHundredGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_100G, "HundredGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_56G, "FiftySixGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_50G, "FiftyGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_40G, "FortyGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_25G, "TwentyFiveGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_20G, "TwentyGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_10G, "TenGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_5G, "FiveGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_2_5G, "TwoDotFiveGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_1G, "GigabitEthernet" },
 };
 
 static clib_error_t *
@@ -217,7 +217,7 @@ dpdk_find_startup_config (struct rte_eth_dev_info *di)
   return &dm->conf->default_devconf;
 }
 
-static bool is_Netronome_Device(const char *driver_name)
+static bool is_corigine_Device(const char *driver_name)
 {
 	bool ret = false;
 
@@ -227,7 +227,7 @@ static bool is_Netronome_Device(const char *driver_name)
 	}
 	else
 	{
-		ret = false; 
+		ret = false;
 	}
 
 	return ret;
@@ -235,26 +235,25 @@ static bool is_Netronome_Device(const char *driver_name)
 
 static u8 get_new_pci_function_by_dev_name(u16 port_id)
 {
-	int  index = 0;
-	char if_name[RTE_ETH_NAME_MAX_LEN] = {0};
+    int  index     = 0;
+    int  result    = 0;
+    char digits[3] = {0};
+    char if_name[RTE_ETH_NAME_MAX_LEN] = {0};
 
-	rte_eth_dev_get_name_by_port(port_id, if_name);
+    rte_eth_dev_get_name_by_port(port_id, if_name);
 
-	index = strlen(if_name);
+    index = strlen(if_name);
+    if (strlen("flower_repr_p60") == index)
+        digits[0] = if_name[index-1];
+    else
+        memcpy(digits, if_name + index -2, 2);
 
-	switch(if_name[index-1])
-	{
-		case '0':
-			return (u8)0;
-		case '1':
-			return (u8)1;
-		case '2':
-			return (u8)2;
-		case '3':
-			return (u8)3;
-		default:
-			return (u8)0x7f;
-	}
+    result = atoi(digits);
+
+    if (result < 14)
+        return (u8)result;
+    else
+        return (u8)0x7f;
 }
 
 static clib_error_t *
@@ -302,6 +301,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       dpdk_device_config_t *devconf = 0;
       vnet_eth_interface_registration_t eir = {};
       dpdk_driver_t *dr;
+      u32 dev_flags;
 
       if (!rte_eth_dev_is_valid_port (port_id))
 	continue;
@@ -320,6 +320,11 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  continue;
 	}
 
+  dev_flags = *(di.dev_flags);
+  if ((dev_flags & RTE_ETH_DEV_REPRESENTOR) == 0) {
+    continue;
+  }
+
       devconf = dpdk_find_startup_config (&di);
 
       /* If device is blacklisted, we should skip it */
@@ -330,18 +335,16 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  continue;
 	}
 
-	  /* renew pci function by huaxing.zhu*/
-	  u8 new_pci_f = 0x7f;
-	  bool is_nfp = is_Netronome_Device(di.driver_name);
-	  if(true == is_nfp)
-	  {
-	  	new_pci_f = get_new_pci_function_by_dev_name(port_id);
-	  	if(0x7f == new_pci_f)
-	  	{
-	   	 dpdk_log_warn ("[%d] get_new_pci_function_by_dev_name failed. Skipping...", port_id);
-	   	 continue;
-	  	}
-	  }
+    /* renew pci function by huaxing.zhu*/
+    u8 new_pci_f = 0x7f;
+    bool is_nfp = is_corigine_Device(di.driver_name);
+    if(true == is_nfp) {
+        new_pci_f = get_new_pci_function_by_dev_name(port_id);
+        if(0x7f == new_pci_f) {
+            dpdk_log_warn ("[%d] get_new_pci_function_by_dev_name failed. Skipping...", port_id);
+            continue;
+        }
+    }
 
       vec_add2_aligned (dm->devices, xd, 1, CLIB_CACHE_LINE_BYTES);
       xd->port_id = port_id;
@@ -400,19 +403,13 @@ dpdk_lib_init (dpdk_main_t * dm)
 
 	  if (dr && dr->interface_number_from_port_id)
 	    xd->name = format (xd->name, "%u", port_id);
-	  else if ((pci_dev = dpdk_get_pci_device (&di)))
-	  {
-		if ((true == is_nfp) && (0x7f != new_pci_f))
-		{
-			xd->name = format (xd->name, if_num_fmt, pci_dev->addr.bus,
-						pci_dev->addr.devid, new_pci_f);
-		}
-		else
-		{
-			xd->name = format (xd->name, if_num_fmt, pci_dev->addr.bus,
-			           pci_dev->addr.devid, pci_dev->addr.function);
-		}
-	  }
+	  else if ((pci_dev = dpdk_get_pci_device (&di))) {
+        if ((true == is_nfp) && (0x7f != new_pci_f)) {
+                xd->name = format (xd->name, if_num_fmt, pci_dev->addr.bus, pci_dev->addr.devid, new_pci_f);
+        } else {
+                xd->name = format (xd->name, if_num_fmt, pci_dev->addr.bus, pci_dev->addr.devid, pci_dev->addr.function);
+        }
+    }
 	  else
 	    xd->name = format (xd->name, "%u", port_id);
 	}
@@ -710,13 +707,13 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
 	 d->device_id == 0x1614 || d->device_id == 0x1606 ||
 	 d->device_id == 0x1609 || d->device_id == 0x1614)))
       ;
-	/* Netronome Systems, Inc. Device 4000 add by huaxing.zhu */
-	else if((0x19ee == d->vendor_id) && (0x4000 == d->device_id))
-	{
-		dpdk_log_warn ("(pci:%02u:%02u.%u)Netronome Systems, Inc. Device 4000 add!\n",
-			d->addr.bus,d->addr.slot,d->addr.function);
+    /* Netronome Systems, Inc. Device 3800 add by huaxing.zhu */
+    else if((0x1da8 == d->vendor_id) && (0x3800 == d->device_id))
+    {
+        dpdk_log_warn ("(pci:%02u:%02u.%u)Netronome Systems, Inc. Device 3800 add!\n",
+                            d->addr.bus,d->addr.slot,d->addr.function);
         continue;
-	}
+    }
     else
       {
         dpdk_log_warn ("Unsupported PCI device 0x%04x:0x%04x found "
